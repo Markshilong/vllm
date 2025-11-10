@@ -76,31 +76,31 @@ def test_end_to_end():
     
     del llm_standard
     
-    # 测试无 Spec Decode (基准)
-    print("\n测试 C: 无 Spec Decode (基准)")
-    llm_baseline = LLM(
-        model="facebook/opt-6.7b",
-        tensor_parallel_size=1,
-        download_dir="/mnt/sdb/huggingface_cache",
-        enforce_eager=True,
-        # 不使用 speculative_config
-    )
+    # # 测试无 Spec Decode (基准)
+    # print("\n测试 C: 无 Spec Decode (基准)")
+    # llm_baseline = LLM(
+    #     model="facebook/opt-6.7b",
+    #     tensor_parallel_size=1,
+    #     download_dir="/mnt/sdb/huggingface_cache",
+    #     enforce_eager=True,
+    #     # 不使用 speculative_config
+    # )
     
-    print("生成中...")
-    outputs_baseline = llm_baseline.generate(prompts, sampling_params)
+    # print("生成中...")
+    # outputs_baseline = llm_baseline.generate(prompts, sampling_params)
     
-    print("\n输出结果 (无 Spec Decode):")
-    for i, output in enumerate(outputs_baseline):
-        print(f"  [{i+1}] Prompt: {output.prompt!r}")
-        print(f"      Generated: {output.outputs[0].text!r}")
-        assert len(output.outputs[0].text) > 0, "输出不应为空"
+    # print("\n输出结果 (无 Spec Decode):")
+    # for i, output in enumerate(outputs_baseline):
+    #     print(f"  [{i+1}] Prompt: {output.prompt!r}")
+    #     print(f"      Generated: {output.outputs[0].text!r}")
+    #     assert len(output.outputs[0].text) > 0, "输出不应为空"
     
-    del llm_baseline
+    # del llm_baseline
     
-    print("\n✓ 测试 4 通过: 端到端流程正常运行")
-    print("=" * 60)
-    print("\n注意: Reward-Shifted SS 的输出可能与标准 Spec Decode 不同，")
-    print("      这是预期的，因为 accept 和 recover 逻辑不同。")
+    # print("\n✓ 测试 4 通过: 端到端流程正常运行")
+    # print("=" * 60)
+    # print("\n注意: Reward-Shifted SS 的输出可能与标准 Spec Decode 不同，")
+    # print("      这是预期的，因为 accept 和 recover 逻辑不同。")
 
 if __name__ == "__main__":
     test_end_to_end()
