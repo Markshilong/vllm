@@ -96,9 +96,32 @@ def create_spec_worker(*args, **kwargs) -> "SpecDecodeWorker":
         ngram_prompt_lookup_min=speculative_config.prompt_lookup_min,
     )
 
+    # Create small_base_worker if small_base_model is provided
+    small_base_worker_kwargs: Optional[Dict[str, Any]] = None
+    if speculative_config.small_base_model is not None:
+        small_base_worker_kwargs = kwargs.copy()
+        small_base_worker_config = copy.deepcopy(vllm_config)
+        small_base_worker_config.model_config = speculative_config.small_base_model_config
+        small_base_worker_config.quant_config = VllmConfig._get_quantization_config(
+            small_base_worker_config.model_config,
+            vllm_config.load_config,
+        )
+        speculative_config.small_base_parallel_config.worker_cls =\
+            small_base_worker_config.parallel_config.sd_worker_cls
+        small_base_worker_config.parallel_config = speculative_config.small_base_parallel_config  # noqa
+        # TODO allow small-base-model specific load config.
+
+        # Override small-base-model specific worker args.
+        small_base_worker_kwargs.update(
+            vllm_config=small_base_worker_config,
+            ngram_prompt_lookup_max=speculative_config.prompt_lookup_max,
+            ngram_prompt_lookup_min=speculative_config.prompt_lookup_min,
+        )
+
     spec_decode_worker = SpecDecodeWorker.create_worker(
         scorer_worker=target_worker,
         draft_worker_kwargs=draft_worker_kwargs,
+        small_base_worker_kwargs=small_base_worker_kwargs,
         disable_mqa_scorer=speculative_config.disable_mqa_scorer,
         disable_by_batch_size=speculative_config.disable_by_batch_size,
         draft_token_acceptance_method=speculative_config.acceptance_method,
@@ -155,6 +178,7 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         disable_logprobs: bool,
         disable_log_stats: bool,
         num_speculative_tokens: int,
+        small_base_worker_kwargs: Optional[Dict[str, Any]] = None,
     ) -> "SpecDecodeWorker":
 
         allow_zero_draft_token_step = True
@@ -209,6 +233,53 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         logger.info("Configuring SpecDecodeWorker with proposer=%s",
                     type(proposer_worker))
 
+        # Create small_base_worker if small_base_worker_kwargs is provided
+        small_base_worker: Optional[WorkerBase] = None
+        if small_base_worker_kwargs is not None:
+            small_base_ngram_prompt_lookup_max = (
+                small_base_worker_kwargs.pop("ngram_prompt_lookup_max"))
+            small_base_ngram_prompt_lookup_min = (
+                small_base_worker_kwargs.pop("ngram_prompt_lookup_min"))
+            small_base_model_config = small_base_worker_kwargs["vllm_config"].model_config
+            small_base_parallel_config: ParallelConfig = small_base_worker_kwargs[
+                'vllm_config'].parallel_config
+            if small_base_ngram_prompt_lookup_max > 0:
+                small_base_worker_kwargs[
+                    "device_type"] = scorer_worker.device_config.device.type
+                small_base_worker = NGramWorker(**small_base_worker_kwargs)
+                small_base_worker.set_ngram_window_size(
+                    small_base_ngram_prompt_lookup_min,
+                    small_base_ngram_prompt_lookup_max)
+            else:
+                small_base_tp = small_base_parallel_config.tensor_parallel_size
+                target_tp = scorer_worker.parallel_config.tensor_parallel_size
+
+                if small_base_model_config.hf_config.model_type == "mlp_speculator":
+                    small_base_worker = MLPSpeculatorWorker(**small_base_worker_kwargs)
+                elif small_base_model_config.hf_config.model_type == "medusa":
+                    small_base_worker = MedusaWorker(**small_base_worker_kwargs)
+                else:
+                    if small_base_tp == 1:
+                        if current_platform.is_cuda_alike():
+                            small_base_worker_kwargs[
+                                "model_runner_cls"] = TP1DraftModelRunner
+                    else:
+                        if small_base_model_config.hf_config.model_type == "eagle":
+                            raise NotImplementedError(
+                                f"{small_base_model_config.hf_config.model_type} "
+                                "does not support TP > 1 yet")
+
+                    small_base_worker = MultiStepWorker(**small_base_worker_kwargs)
+                    if small_base_model_config.hf_config.model_type == "deepseek_mtp":
+                        # Note: num_spec_prefill_steps is not used for small_base_worker
+                        pass
+
+                small_base_worker = SmallerTpProposerWorker.maybe_wrap_worker(
+                    small_base_worker, small_base_tp, target_tp)
+
+            logger.info("Configuring SpecDecodeWorker with small_base_worker=%s",
+                        type(small_base_worker))
+
         spec_decode_sampler: SpecDecodeBaseSampler = None
         if draft_token_acceptance_method == "rejection_sampler":
             spec_decode_sampler = RejectionSampler()
@@ -255,7 +326,8 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
             spec_decode_sampler=spec_decode_sampler,
             allow_zero_draft_token_step=allow_zero_draft_token_step,
             enable_lm_head_weight_load=enable_lm_head_weight_load,
-            num_spec_prefill_steps=num_spec_prefill_steps)
+            num_spec_prefill_steps=num_spec_prefill_steps,
+            small_base_worker=small_base_worker)
 
     def __init__(
         self,
@@ -270,6 +342,7 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         allow_zero_draft_token_step: Optional[bool] = True,
         enable_lm_head_weight_load: Optional[bool] = False,
         num_spec_prefill_steps: int = 1,
+        small_base_worker: Optional[WorkerBase] = None,
     ):
         """
         Create a SpecDecodeWorker.
@@ -309,6 +382,7 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         """
         self.proposer_worker = proposer_worker
         self.scorer_worker = scorer_worker
+        self.small_base_worker = small_base_worker
         scorer_runner = getattr(self.scorer_worker, "model_runner", None)
         self.generators = scorer_runner.get_generators(
         ) if scorer_runner else None
@@ -348,10 +422,14 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         # model has a smaller TP degree than the target worker.
         self.scorer_worker.init_device()
         self.proposer_worker.init_device()
+        if self.small_base_worker is not None:
+            self.small_base_worker.init_device()
 
         # NOTE(cade): load_model is not part of the WorkerBase interface.
         self.scorer_worker.load_model()
         self.proposer_worker.load_model()
+        if self.small_base_worker is not None:
+            self.small_base_worker.load_model()
 
         if self._enable_lm_head_weight_load:
             # NOTE(Shangming): gather lm_head weight when tp enabled
@@ -1251,10 +1329,10 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         """Get the vocab size of the model and make sure it's consistent between
         draft and target workers.
         """
-        vocab_sizes = [
-            worker.vocab_size
-            for worker in [self.proposer_worker, self.scorer_worker]
-        ]
+        workers = [self.proposer_worker, self.scorer_worker]
+        if self.small_base_worker is not None:
+            workers.append(self.small_base_worker)
+        vocab_sizes = [worker.vocab_size for worker in workers]
         assert all(vocab_sizes[0] == vocab_size for vocab_size in vocab_sizes)
         return vocab_sizes[0]
 

@@ -2171,6 +2171,13 @@ class SpeculativeConfig:
     draft_tensor_parallel_size: Optional[int] = None
     """The degree of the tensor parallelism for the draft model. Can only be 1
     or the same as the target model's tensor parallel size."""
+    small_base_model: Optional[str] = None
+    """The name of the small base model for Reward-Shifted Speculative Sampling.
+    If provided, this model will be used as the denominator in the accept formula
+    instead of the draft model."""
+    small_base_tensor_parallel_size: Optional[int] = None
+    """The degree of the tensor parallelism for the small base model. Can only be 1
+    or the same as the target model's tensor parallel size."""
     disable_logprobs: bool = True
     """If set to True, token log probabilities are not returned during
     speculative decoding. If set to False, token log probabilities are returned
@@ -2241,6 +2248,12 @@ class SpeculativeConfig:
     draft_parallel_config: ParallelConfig = field(default=None,
                                                   init=True)  # type: ignore
     """The parallel configuration for the draft model initialized internal."""
+    small_base_model_config: Optional[ModelConfig] = field(default=None,
+                                                          init=True)  # type: ignore
+    """The configuration of the small base model initialized internal."""
+    small_base_parallel_config: Optional[ParallelConfig] = field(default=None,
+                                                                 init=True)  # type: ignore
+    """The parallel configuration for the small base model initialized internal."""
 
     def compute_hash(self) -> str:
         """
@@ -2442,6 +2455,50 @@ class SpeculativeConfig:
                         self.target_parallel_config,
                         self.draft_tensor_parallel_size))
 
+        # Create small_base_model_config if small_base_model is provided
+        if self.small_base_model is not None:
+            self.small_base_model_config = ModelConfig(
+                model=self.small_base_model,
+                task="draft",
+                tokenizer=self.target_model_config.tokenizer,
+                tokenizer_mode=self.target_model_config.tokenizer_mode,
+                trust_remote_code=self.target_model_config.trust_remote_code,
+                allowed_local_media_path=self.target_model_config.
+                allowed_local_media_path,
+                dtype=self.target_model_config.dtype,
+                seed=self.target_model_config.seed,
+                revision=self.revision,
+                code_revision=self.code_revision,
+                tokenizer_revision=self.target_model_config.tokenizer_revision,
+                max_model_len=None,
+                spec_target_max_model_len=self.target_model_config.max_model_len,
+                quantization=self.quantization,
+                enforce_eager=self.target_model_config.enforce_eager,
+                max_seq_len_to_capture=self.target_model_config.
+                max_seq_len_to_capture,
+                max_logprobs=self.target_model_config.max_logprobs,
+                hf_overrides=SpeculativeConfig.hf_config_override,
+            )
+
+            self.small_base_tensor_parallel_size = \
+                SpeculativeConfig._verify_and_get_draft_tp(
+                    self.target_parallel_config,
+                    self.small_base_tensor_parallel_size,
+                    self.small_base_model_config.hf_config
+                )
+
+            self.small_base_model_config.max_model_len = (
+                SpeculativeConfig._maybe_override_draft_max_model_len(
+                    self.max_model_len,
+                    self.small_base_model_config.max_model_len,
+                    self.target_model_config.max_model_len,
+                ))
+
+            self.small_base_parallel_config = (
+                SpeculativeConfig.create_draft_parallel_config(
+                    self.target_parallel_config,
+                    self.small_base_tensor_parallel_size))
+
         if self.acceptance_method == "typical_acceptance_sampler":
             if self.posterior_threshold is None:
                 self.posterior_threshold = 0.09
@@ -2555,6 +2612,10 @@ class SpeculativeConfig:
             self.draft_model_config.verify_with_parallel_config(
                 self.draft_parallel_config)
             # Validate and set draft token acceptance related settings.
+
+        if self.small_base_model_config:
+            self.small_base_model_config.verify_with_parallel_config(
+                self.small_base_parallel_config)
 
         if self.acceptance_method is None:
             raise ValueError("acceptance_method is not set. "
