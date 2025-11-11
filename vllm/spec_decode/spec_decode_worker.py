@@ -462,7 +462,8 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
 
         self.scorer = scorer_cls(scorer_worker=self.scorer_worker,
                                  device=self.device,
-                                 vocab_size=self._vocab_size)
+                                 vocab_size=self._vocab_size,
+                                 small_base_worker=self.small_base_worker)
 
         self._configure_model_sampler_for_spec_decode()
 
@@ -518,12 +519,15 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
 
     def initialize_cache(self, num_gpu_blocks: int,
                          num_cpu_blocks: int) -> None:
-        """Initialize the cache engine of the scorer and proposer workers.
+        """Initialize the cache engine of the scorer, proposer, and small_base workers.
         """
         self.scorer_worker.initialize_cache(num_gpu_blocks=num_gpu_blocks,
                                             num_cpu_blocks=num_cpu_blocks)
         self.proposer_worker.initialize_cache(num_gpu_blocks=num_gpu_blocks,
                                               num_cpu_blocks=num_cpu_blocks)
+        if self.small_base_worker is not None:
+            self.small_base_worker.initialize_cache(num_gpu_blocks=num_gpu_blocks,
+                                                    num_cpu_blocks=num_cpu_blocks)
 
     def get_model(self) -> nn.Module:
         return self.scorer_worker.get_model()
@@ -944,11 +948,16 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         # Get bonus tokens from target model.
         bonus_token_ids = proposal_scores.token_ids[spec_indices, -1:]
 
-        # Get probabilities according to proposal method.
+        # Get probabilities according to proposal method (draft/reasoning model).
         proposal_probs = proposals.proposal_probs[spec_indices]
 
         # Get proposed tokens.
         proposal_token_ids = proposals.proposal_token_ids[spec_indices]
+
+        # Get small_base_probs if available for Reward-Shifted Speculative Sampling
+        small_base_probs = None
+        if proposal_scores.small_base_probs is not None:
+            small_base_probs = proposal_scores.small_base_probs[spec_indices]
 
         # Sampler arguments
         sampler_extra_kwargs: Dict[str, Any] = {}
@@ -965,6 +974,7 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
             bonus_token_ids=bonus_token_ids,
             draft_probs=proposal_probs,
             draft_token_ids=proposal_token_ids,
+            small_base_probs=small_base_probs,
             **sampler_extra_kwargs,
         )
         # Append output tokens from non-speculative sequences to

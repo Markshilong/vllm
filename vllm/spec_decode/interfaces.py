@@ -60,6 +60,10 @@ class SpeculativeScores:
     # for each request, when chunked prefill is enabled.
     prompt_logprobs: Optional[List[PromptLogprobs]] = None
 
+    # Optional probabilities from the small_base model for Reward-Shifted
+    # Speculative Sampling. Shape: [batch_size, num_speculative_tokens + 1, vocab_size]
+    small_base_probs: Optional[torch.Tensor] = None
+
     def __repr__(self):
         return (f"SpeculativeScores("
                 f"probs={self.probs.shape}, "
@@ -82,12 +86,14 @@ class SpeculativeProposer(ABC):
 class SpeculativeScorer(ABC):
 
     def __init__(self, scorer_worker: WorkerBase,
-                 device: Union[torch.device, str], vocab_size: int):
+                 device: Union[torch.device, str], vocab_size: int,
+                 small_base_worker: Optional[WorkerBase] = None):
         self._scorer_worker = scorer_worker
         if isinstance(device, torch.device):
             device = device.type
         self._device = device
         self._vocab_size = vocab_size
+        self._small_base_worker = small_base_worker
 
     @abstractmethod
     def score_proposals(

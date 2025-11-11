@@ -69,6 +69,16 @@ class MQAScorer(SpeculativeScorer):
 
         target_sampler_output = target_sampler_output[0]
 
+        # Get small_base probabilities if small_base_worker is available
+        small_base_probs = None
+        if self._small_base_worker is not None:
+            small_base_sampler_output = self._small_base_worker.execute_model(
+                execute_model_req=execute_model_req.clone(
+                    seq_group_metadata_list=target_seq_group_metadata_list))
+            small_base_sampler_output = small_base_sampler_output[0]
+            small_base_probs_raw = small_base_sampler_output.sampled_token_probs
+            # small_base_probs will be reshaped later along with target_probs
+
         k = execute_model_req.num_lookahead_slots
         bs = len(execute_model_req.seq_group_metadata_list)
         target_token_ids = target_sampler_output.sampled_token_ids
@@ -87,6 +97,10 @@ class MQAScorer(SpeculativeScorer):
             all_tokens = target_token_ids.reshape(bs, k + 1)
             all_probs = target_probs.reshape(bs, k + 1, self._vocab_size)
             all_logprobs = target_logprobs.reshape(bs, k + 1, self._vocab_size)
+            # Reshape small_base_probs if available
+            if small_base_probs is not None:
+                small_base_probs = small_base_probs_raw.reshape(
+                    bs, k + 1, self._vocab_size)
         else:
             # We either have decodes with different lens or prefill+decodes.
             all_tokens = target_token_ids.new_full(size=(bs, k + 1),
@@ -114,6 +128,10 @@ class MQAScorer(SpeculativeScorer):
                 ]
 
             # Split loop into prefill|decode for readability.
+            # Also reshape small_base_probs if available
+            if small_base_probs is not None:
+                all_small_base_probs = small_base_probs_raw.new_zeros(
+                    *all_tokens.shape, self._vocab_size)
             start_loc, i = 0, 0
             while i < len(target_seq_group_metadata_list
                           ) and target_seq_group_metadata_list[i].is_prompt:
@@ -130,6 +148,9 @@ class MQAScorer(SpeculativeScorer):
                     all_tokens[i, 0] = target_token_ids[end_loc - 1]
                     all_probs[i, 0] = target_probs[end_loc - 1]
                     all_logprobs[i, 0] = target_logprobs[end_loc - 1]
+                    if small_base_probs is not None:
+                        all_small_base_probs[i, 0] = small_base_probs_raw[
+                            end_loc - 1]
 
                 i += 1
                 start_loc = end_loc
@@ -144,8 +165,14 @@ class MQAScorer(SpeculativeScorer):
                 all_probs[i, :output_len] = target_probs[start_loc:end_loc]
                 all_logprobs[
                     i, :output_len] = target_logprobs[start_loc:end_loc]
+                if small_base_probs is not None:
+                    all_small_base_probs[
+                        i, :output_len] = small_base_probs_raw[
+                            start_loc:end_loc]
                 start_loc = end_loc
                 i += 1
+            if small_base_probs is not None:
+                small_base_probs = all_small_base_probs
 
         hidden_states = None
         if target_sampler_output.hidden_states is not None:
@@ -156,4 +183,5 @@ class MQAScorer(SpeculativeScorer):
                                  token_ids=all_tokens,
                                  logprobs=all_logprobs,
                                  hidden_states=hidden_states,
-                                 prompt_logprobs=prompt_logprobs)
+                                 prompt_logprobs=prompt_logprobs,
+                                 small_base_probs=small_base_probs)
