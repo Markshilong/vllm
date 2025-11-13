@@ -71,6 +71,7 @@ class MQAScorer(SpeculativeScorer):
 
         # Get small_base probabilities if small_base_worker is available
         small_base_probs = None
+        small_base_probs_raw = None
         if self._small_base_worker is not None:
             small_base_sampler_output = self._small_base_worker.execute_model(
                 execute_model_req=execute_model_req.clone(
@@ -98,7 +99,7 @@ class MQAScorer(SpeculativeScorer):
             all_probs = target_probs.reshape(bs, k + 1, self._vocab_size)
             all_logprobs = target_logprobs.reshape(bs, k + 1, self._vocab_size)
             # Reshape small_base_probs if available
-            if small_base_probs is not None:
+            if small_base_probs_raw is not None:
                 small_base_probs = small_base_probs_raw.reshape(
                     bs, k + 1, self._vocab_size)
         else:
@@ -129,7 +130,7 @@ class MQAScorer(SpeculativeScorer):
 
             # Split loop into prefill|decode for readability.
             # Also reshape small_base_probs if available
-            if small_base_probs is not None:
+            if small_base_probs_raw is not None:
                 all_small_base_probs = small_base_probs_raw.new_zeros(
                     *all_tokens.shape, self._vocab_size)
             start_loc, i = 0, 0
@@ -148,7 +149,7 @@ class MQAScorer(SpeculativeScorer):
                     all_tokens[i, 0] = target_token_ids[end_loc - 1]
                     all_probs[i, 0] = target_probs[end_loc - 1]
                     all_logprobs[i, 0] = target_logprobs[end_loc - 1]
-                    if small_base_probs is not None:
+                    if small_base_probs_raw is not None:
                         all_small_base_probs[i, 0] = small_base_probs_raw[
                             end_loc - 1]
 
@@ -165,13 +166,13 @@ class MQAScorer(SpeculativeScorer):
                 all_probs[i, :output_len] = target_probs[start_loc:end_loc]
                 all_logprobs[
                     i, :output_len] = target_logprobs[start_loc:end_loc]
-                if small_base_probs is not None:
+                if small_base_probs_raw is not None:
                     all_small_base_probs[
                         i, :output_len] = small_base_probs_raw[
                             start_loc:end_loc]
                 start_loc = end_loc
                 i += 1
-            if small_base_probs is not None:
+            if small_base_probs_raw is not None:
                 small_base_probs = all_small_base_probs
 
         hidden_states = None

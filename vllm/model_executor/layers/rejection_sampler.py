@@ -315,8 +315,9 @@ class RejectionSampler(SpecDecodeStochasticBaseSampler):
         uniform_rand = self._create_uniform_samples(seeded_seqs, batch_size,
                                                     k - 1, target_probs.device)
 
+        # Add smallest_positive_value to avoid division by zero
         capped_ratio = torch.minimum(
-            selected_target_probs / selected_denom_probs,
+            selected_target_probs / (selected_denom_probs + self._smallest_positive_value),
             torch.full((1, ), 1, device=target_probs.device))
         accepted = uniform_rand < capped_ratio
 

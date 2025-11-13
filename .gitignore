@@ -180,6 +180,7 @@ cython_debug/
 
 # Results
 *.csv
+sl_tests/models/
 
 # Python pickle files
 *.pkl

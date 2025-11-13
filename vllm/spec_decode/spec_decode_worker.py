@@ -495,6 +495,18 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
          should_modify_greedy_probs_inplace) = True
         self.proposer_worker.set_include_gpu_probs_tensor()
         self.proposer_worker.set_should_modify_greedy_probs_inplace()
+        
+        # Configure small_base_worker if it exists
+        if self.small_base_worker is not None:
+            # If small_base_worker has set_include_gpu_probs_tensor method, use it
+            if hasattr(self.small_base_worker, 'set_include_gpu_probs_tensor'):
+                self.small_base_worker.set_include_gpu_probs_tensor()
+                self.small_base_worker.set_should_modify_greedy_probs_inplace()
+            # Otherwise, directly set sampler attributes if small_base_worker has model_runner.sampler
+            elif (hasattr(self.small_base_worker, 'model_runner')
+                  and hasattr(self.small_base_worker.model_runner, 'sampler')):
+                self.small_base_worker.model_runner.sampler.include_gpu_probs_tensor = True
+                self.small_base_worker.model_runner.sampler.should_modify_greedy_probs_inplace = True
 
     def determine_num_available_blocks(self) -> Tuple[int, int]:
         """Determine the number of cache blocks to use.
